@@ -63,6 +63,10 @@
 // Use project enums instead of #define for ON and OFF.
 
 #include <xc.h>
+#include <cp0defs.h>
+#include <sys/attribs.h>
+
+#define CORE_TICK_RATE 800000u
 
 #define LED1        LATJbits.LATJ7
 #define LED2        LATKbits.LATK7
@@ -74,21 +78,69 @@
 #define SW2         PORTJbits.RJ5
 #define SW3         PORTJbits.RJ6
 
-int main( void ) {
-    /*Configure tri-state registers*/
-    TRISJbits.TRISJ4 = 1;   //SW1 as input
-    TRISJbits.TRISJ5 = 1;   //SW2 as input
-    TRISJbits.TRISJ6 = 1;   //SW3 as input
-     
-    TRISJbits.TRISJ7 = 0;   //LED1 as output
-    TRISKbits.TRISK7 = 0;   //LED2 as output
-    TRISJbits.TRISJ3 = 0;   //LED3 as output
+void __ISR(_CORE_TIMER_VECTOR, IPL2SRS) CTInterruptHandler(void) {
+    // static value for permanent storage duration
+    static unsigned char portValue = 0;
     
-    while(1)
-    {
-        LED1 = SW1;    //LED1 turns on when SW1 is pressed
-        LED2 = SW2;    //LED2 turns on when SW2 is pressed
-        LED3 = SW3;    //LED3 turns on when SW3 is pressed
-    }
-    return 0;
+    // variables for compare period
+    unsigned long ct_count = _CP0_GET_COUNT();
+    unsigned long period = CORE_TICK_RATE;
+    
+    // write to port latch
+    LATA = portValue++;
+    
+    // update the compare period
+    period += ct_count;
+    _CP0_SET_COMPARE(period);
+    
+    // clear the interrupt flag
+    IFS0CLR = _IFS0_CTIF_MASK;
+}
+
+int main( void ) {
+    unsigned int stat_gie, cause_val;
+    
+    // disabled interrupts by clearing the global interrupt enable bit
+    // in the STATUS register
+    stat_gie = __builtin_disable_interrupts();
+    
+    // Port A access
+    TRISA = 0x0; 
+    LATA = 0x0;
+    
+    // configure the core timer
+    // clear the CP0 count register
+    _CP0_SET_COUNT(0);
+    // set up the period in the CP0 compare register
+    _CP0_SET_COMPARE(CORE_TICK_RATE);
+    // halt core timer and program at a debug breakpoint
+    _CP0_BIC_DEBUG(_CP0_DEBUG_COUNTDM_MASK);
+    
+    // set up core timer interrupt
+    // clear core timer interrupt flag
+    IFS0CLR = _IFS0_CTIF_MASK;
+    // set core timer interrupt priority of 2
+    IPC0CLR = _IPC0_CTIP_MASK;
+    IPC0SET = (2 << _IPC0_CTIP_POSITION);
+    // set core timer interrupt subpriority of 0
+    IPC0CLR = _IPC0_CTIS_MASK;
+    IPC0SET = (0 << _IPC0_CTIS_POSITION);
+    // enable core timer interrupt
+    IEC0CLR = _IEC0_CTIE_MASK;
+    IEC0SET = (1 << _IEC0_CTIE_POSITION);
+    
+    // set the CP0 cause register interrupt vector bit
+    cause_val = _CP0_GET_CAUSE();
+    cause_val |= _CP0_CAUSE_IV_MASK;
+    _CP0_SET_CAUSE(cause_val);
+    
+    // enable multi-vector interrupts
+    INTCONSET = _INTCON_MVEC_MASK;
+    
+    // enable global interrupts
+    __builtin_enable_interrupts();
+    
+    while(1);
+    
+    return -1;
 }
